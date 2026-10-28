@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="de-CH">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Badi-Log Zürich</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #eaf6f7; --tile: #d3ecef; --ink: #0d3b47; --muted: #4f7580;
+    --water: #2fa3c4; --water-deep: #1b7d9e; --lane: #f2c12e; --card: #ffffff;
+    --grid: rgba(13,59,71,.12);
+    color-scheme: light;
+    box-sizing: border-box;
+    padding-top: env(safe-area-inset-top, 0px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0a2229; --tile: #113039; --ink: #e3f4f7; --muted: #9cc0c9;
+      --water: #3fb4d6; --water-deep: #1a6a86; --lane: #e8b71f; --card: #0f2c34;
+      --grid: rgba(227,244,247,.12);
+      color-scheme: dark;
+    }
+  }
+  *, *::before, *::after { box-sizing: inherit; }
+  body {
+    margin: 0;
+    font-family: "Bricolage Grotesque", system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: var(--ink);
+    background-color: var(--bg);
+    background-image:
+      linear-gradient(var(--tile) 2px, transparent 2px),
+      linear-gradient(90deg, var(--tile) 2px, transparent 2px);
+    background-size: 28px 28px;
+    padding: 1.5rem;
+  }
+  main { max-width: 56rem; margin: 0 auto; }
+  h1 { font-weight: 800; font-size: clamp(2rem, 7vw, 3rem); line-height: 1; margin: 0 0 .4rem; letter-spacing: -.02em; }
+  h2 { font-weight: 800; font-size: 1.35rem; margin: 0 0 .75rem; }
+  .sub { color: var(--muted); margin: 0 0 1.5rem; font-size: 1.05rem; }
+  .controls { display: flex; flex-wrap: wrap; gap: .75rem 1.5rem; align-items: center; margin-bottom: 1.25rem; }
+  select {
+    font: inherit; font-weight: 600; color: var(--ink); background: var(--card);
+    border: 3px solid var(--ink); border-radius: 4px; padding: .35rem .5rem;
+  }
+  .range { display: flex; border: 3px solid var(--ink); border-radius: 4px; overflow: hidden; }
+  .range button {
+    font: inherit; font-weight: 600; color: var(--ink); background: var(--card);
+    border: 0; padding: .4rem .8rem; cursor: pointer;
+  }
+  .range button + button { border-left: 3px solid var(--ink); }
+  .range button[aria-pressed="true"] { background: var(--ink); color: var(--card); }
+  button:focus-visible, select:focus-visible { outline: 3px solid var(--lane); outline-offset: 2px; }
+  .panel { background: var(--card); border: 3px solid var(--ink); border-radius: 6px; padding: 1rem 1rem .75rem; margin-bottom: 1.5rem; }
+  .now { display: flex; align-items: baseline; gap: .6rem; margin-bottom: .75rem; flex-wrap: wrap; }
+  .now strong { font-size: 3rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+  .now span { color: var(--muted); }
+  .chart-box { position: relative; height: 18rem; }
+  .status { color: var(--muted); min-height: 1.4em; }
+  .status.error { color: #c0392b; }
+  @media (prefers-color-scheme: dark) { .status.error { color: #ff8a7a; } }
+  footer { font-size: .85rem; color: var(--muted); }
+  footer a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Badi-Log Zürich</h1>
+  <p class="sub">Badegäste über die Zeit, alle 15 Minuten gemessen.</p>
+
+  <div class="controls">
+    <label>Bad
+      <select id="bath"></select>
+    </label>
+    <div class="range" role="group" aria-label="Zeitraum">
+      <button type="button" data-days="1" aria-pressed="false">24 Std.</button>
+      <button type="button" data-days="7" aria-pressed="true">7 Tage</button>
+      <button type="button" data-days="30" aria-pressed="false">30 Tage</button>
+      <button type="button" data-days="0" aria-pressed="false">Alles</button>
+    </div>
+  </div>
+
+  <p class="status" id="status">Daten werden geladen …</p>
+
+  <section class="panel">
+    <div class="now"><strong id="latest">–</strong><span id="latestTime"></span></div>
+    <div class="chart-box"><canvas id="lineChart" aria-label="Verlauf der Badegäste"></canvas></div>
+  </section>
+
+  <section class="panel">
+    <h2>Durchschnitt nach Uhrzeit</h2>
+    <div class="chart-box"><canvas id="hourChart" aria-label="Durchschnittliche Badegäste pro Stunde"></canvas></div>
+  </section>
+
+  <footer>
+    Daten: Sportamt der Stadt Zürich, <a href="https://data.stadt-zuerich.ch/dataset/ssd_spo_badi_aktuell">Open Data Zürich</a>.
+    Geloggt mit GitHub Actions.
+  </footer>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+  // ---- Einstellungen ----
+  const REPO = "philcamps/Badilogger";
+  const BRANCH = "main";
+  const DEFAULT_BATH = /leimbach/i;
+  const MONTHS_BACK = 12;           // so viele Monatsdateien werden höchstens geladen
+  const TZ = "Europe/Zurich";
+
+  // Auf GitHub Pages relativ laden, sonst direkt aus dem Repo
+  const BASE = location.hostname.endsWith("github.io")
+    ? "data/"
+    : `https://raw.githubusercontent.com/${REPO}/${BRANCH}/data/`;
+
+  const el = id => document.getElementById(id);
+  const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  let rows = [], days = 7, lineChart, hourChart;
+
+  function parseCSV(text) {
+    const out = []; let row = [], cell = "", q = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (q) {
+        if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+        else if (c === '"') q = false;
+        else cell += c;
+      } else if (c === '"') q = true;
+      else if (c === ",") { row.push(cell); cell = ""; }
+      else if (c === "\n" || c === "\r") {
+        if (c === "\r" && text[i + 1] === "\n") i++;
+        row.push(cell); out.push(row); row = []; cell = "";
+      } else cell += c;
+    }
+    if (cell || row.length) { row.push(cell); out.push(row); }
+    const head = out.shift().map(h => h.trim().replace(/^\uFEFF/, ""));
+    return out.filter(r => r.length > 1).map(r => Object.fromEntries(head.map((h, i) => [h, r[i]])));
+  }
+
+  function monthKeys() {
+    const keys = [], d = new Date();
+    d.setUTCDate(1);
+    for (let i = 0; i < MONTHS_BACK; i++) {
+      keys.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`);
+      d.setUTCMonth(d.getUTCMonth() - 1);
+    }
+    return keys;
+  }
+
+  async function loadAll() {
+    const files = await Promise.all(monthKeys().map(async k => {
+      try {
+        const res = await fetch(BASE + k + ".csv", { cache: "no-store" });
+        return res.ok ? parseCSV(await res.text()) : [];
+      } catch { return []; }
+    }));
+    return files.flat()
+      .map(r => ({ t: Date.parse(r.logged_at), name: r.name, n: parseInt(r.currentfill, 10) }))
+      .filter(r => Number.isFinite(r.t) && Number.isFinite(r.n) && r.name)
+      .sort((a, b) => a.t - b.t);
+  }
+
+  const fmtTime = (t, withDate) => new Date(t).toLocaleString("de-CH", withDate
+    ? { timeZone: TZ, weekday: "short", day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" }
+    : { timeZone: TZ, day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
+  const hourOf = t => Number(new Date(t).toLocaleString("de-CH", { timeZone: TZ, hour: "2-digit", hour12: false }));
+
+  function render() {
+    const bath = el("bath").value;
+    const from = days ? Date.now() - days * 864e5 : 0;
+    const data = rows.filter(r => r.name === bath && r.t >= from);
+
+    const last = rows.filter(r => r.name === bath).at(-1);
+    el("latest").textContent = last ? last.n.toLocaleString("de-CH") : "–";
+    el("latestTime").textContent = last ? "Badegäste, zuletzt gemessen " + fmtTime(last.t, true) + " Uhr" : "";
+    el("status").textContent = data.length ? `${data.length.toLocaleString("de-CH")} Messungen im Zeitraum` : "Für diesen Zeitraum gibt es noch keine Messungen.";
+    el("status").className = "status";
+
+    const ink = css("--ink"), muted = css("--muted"), grid = css("--grid"), water = css("--water");
+    const axis = { ticks: { color: muted }, grid: { color: grid }, border: { color: ink } };
+
+    lineChart?.destroy();
+    lineChart = new Chart(el("lineChart"), {
+      type: "line",
+      data: { datasets: [{
+        data: data.map(r => ({ x: r.t, y: r.n })),
+        borderColor: water, backgroundColor: water + "33", fill: true,
+        borderWidth: 2, pointRadius: 0, tension: .25
+      }]},
+      options: {
+        maintainAspectRatio: false, animation: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: { legend: { display: false },
+          tooltip: { callbacks: { title: i => fmtTime(i[0].parsed.x, true) + " Uhr", label: i => ` ${i.parsed.y} Badegäste` } } },
+        scales: {
+          x: { ...axis, type: "linear", min: days ? from : undefined, max: days ? Date.now() : undefined,
+               ticks: { color: muted, maxTicksLimit: 7, callback: v => fmtTime(v, false) } },
+          y: { ...axis, beginAtZero: true }
+        }
+      }
+    });
+
+    const sums = Array(24).fill(0), counts = Array(24).fill(0);
+    data.forEach(r => { const h = hourOf(r.t); sums[h] += r.n; counts[h]++; });
+    const avg = sums.map((s, h) => counts[h] ? Math.round(s / counts[h]) : null);
+
+    hourChart?.destroy();
+    hourChart = new Chart(el("hourChart"), {
+      type: "bar",
+      data: { labels: avg.map((_, h) => h + " Uhr"), datasets: [{ data: avg, backgroundColor: water, borderRadius: 3 }] },
+      options: {
+        maintainAspectRatio: false, animation: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: i => ` ⌀ ${i.parsed.y} Badegäste` } } },
+        scales: { x: axis, y: { ...axis, beginAtZero: true } }
+      }
+    });
+  }
+
+  document.querySelectorAll(".range button").forEach(b => b.addEventListener("click", () => {
+    document.querySelectorAll(".range button").forEach(x => x.setAttribute("aria-pressed", x === b));
+    days = Number(b.dataset.days);
+    render();
+  }));
+  el("bath").addEventListener("change", render);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => rows.length && render());
+
+  (async () => {
+    rows = await loadAll();
+    if (!rows.length) {
+      el("status").textContent = "Noch keine Daten gefunden. Läuft der Workflow schon, und ist das Repo öffentlich?";
+      el("status").className = "status error";
+      return;
+    }
+    const names = [...new Set(rows.map(r => r.name))].sort((a, b) => a.localeCompare(b, "de"));
+    el("bath").innerHTML = names.map(n => `<option>${n.replace(/</g, "&lt;")}</option>`).join("");
+    el("bath").value = names.find(n => DEFAULT_BATH.test(n)) || names[0];
+    render();
+  })();
+</script>
+</body>
+</html>
